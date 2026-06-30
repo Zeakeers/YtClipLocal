@@ -24,39 +24,29 @@ python install_deps.py
 ```
 *Script ini akan otomatis menginstal seluruh package Python yang dibutuhkan seperti `faster-whisper`, `yt-dlp`, `opencv-python`, dan FFmpeg.*
 
----
-
-## 🚀 Cara Menjalankan Bot
-
-### Opsi A: Cara Interaktif (Direkomendasikan)
-Jalankan bot tanpa argumen untuk mengikuti panduan menu interaktif:
-```bash
-python bot.py
+### Langkah 2: Daftarkan Perintah Global 'clipyt'
+Jalankan script berikut agar bot dapat dipanggil dari mana saja (directori mana saja) di komputer Anda:
+```powershell
+python register_cmd.py
 ```
-Anda akan diminta memasukkan:
-1. **Link YouTube** yang ingin diclip.
-2. **Pilihan Layout**:
-   - `1` (Crop Center): Potong bagian tengah video menjadi vertikal 9:16 (sangat cocok untuk video podcast, vlog, dll).
-   - `2` (Stack): Membagi layar menjadi 2 stack (Atas untuk Facecam/Streamer, Bawah untuk Gameplay - sangat cocok untuk klip streaming game).
-3. **Durasi Klip** (Maksimal 90 detik / 1.5 menit).
-4. **Jumlah Klip** yang ingin dihasilkan dari video tersebut (Maksimal 5 klip sekali jalan).
+*Setelah selesai, silakan close dan **buka kembali** terminal/CMD/PowerShell Anda.*
 
 ---
 
-### Opsi B: Jalankan dengan Argumen (Instan)
-Format perintah:
+## 🚀 Cara Menjalankan Bot dari Mana Saja
+
+Sekarang Anda bisa menjalankan bot dari folder mana saja hanya dengan mengetik perintah berikut di CMD/PowerShell baru:
 ```bash
-python bot.py "<LINK_YOUTUBE>" <LAYOUT> <DURASI_DETIK> <JUMLAH_CLIP>
+clipyt
 ```
-Contoh (Membuat 3 klip stack berdurasi 60 detik):
-```bash
-python bot.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ" stack 60 3
-```
+
+### 📁 Pemilihan Folder Penyimpanan (File Explorer GUI)
+Setelah Anda memasukkan link YouTube, pilihan layout, durasi, dan jumlah clip, **File Explorer Windows** akan otomatis terbuka.
+* Anda bisa memilih folder mana saja di komputer Anda (misalnya Desktop, Documents, Harddisk eksternal, dll) sebagai tempat penyimpanan hasil video clip final.
 
 ---
 
 ## 📁 Struktur Folder Output
-* **`output/`**: Berisi video final hasil klip vertikal HD lengkap dengan subtitle karaoke (misal: `viral_clip_1.mp4`, `viral_clip_2.mp4`).
 * **`output/clip_history.json`**: Menyimpan riwayat detik video yang sudah pernah diclip untuk masing-masing URL agar tidak terjadi duplikasi klip di masa mendatang.
 * **`temp/`**: Folder penyimpanan file download mentah (`full_merged.mp4`) untuk mendukung fitur resume. Jangan hapus folder ini jika proses download Anda sempat terputus dan ingin dilanjutkan.
 
