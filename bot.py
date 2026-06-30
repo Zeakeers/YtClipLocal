@@ -25,20 +25,46 @@ from clipper import (
 from subtitle_generator import generate_ass_file_from_faster_whisper
 from layout_processor import format_video_vertical, render_subtitles_to_video
 
-OUTPUT_DIR = "output"
-TEMP_DIR   = "temp"
+# We define default locations
+TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+
+def select_output_directory():
+    """Opens a GUI File Explorer window to select the output directory."""
+    print("\n[GUI] Membuka File Explorer untuk memilih folder penyimpanan...")
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        
+        # Hide root Tkinter window
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True) # Bring dialogue to front
+        
+        # Open folder dialog
+        folder_selected = filedialog.askdirectory(title="Pilih Folder untuk Menyimpan Video Hasil Clip")
+        root.destroy()
+        
+        if folder_selected:
+            # Normalize path
+            folder_selected = os.path.abspath(folder_selected)
+            print(f"Folder terpilih: {folder_selected}")
+            return folder_selected
+    except Exception as e:
+        print(f"Gagal membuka dialog GUI (fallback ke folder output lokal): {e}")
+    
+    # Fallback to local output folder inside bot installation dir
+    fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    os.makedirs(fallback, exist_ok=True)
+    print(f"Menggunakan folder default: {fallback}")
+    return fallback
 
 def transcribe_with_faster_whisper(audio_path, model):
-    """
-    Transcribe audio using faster-whisper with word-level timestamps.
-    Returns list of word dicts: [{'word': ..., 'start': ..., 'end': ...}, ...]
-    """
     segments, info = model.transcribe(
         audio_path,
         beam_size=5,
         best_of=5,
         word_timestamps=True,
-        vad_filter=True,            # Filter silence/noise
+        vad_filter=True,
         vad_parameters=dict(
             min_silence_duration_ms=300,
             speech_pad_ms=200,
@@ -73,9 +99,12 @@ def transcribe_with_faster_whisper(audio_path, model):
 
     return all_words
 
-def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3):
+def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=None):
     os.makedirs(TEMP_DIR, exist_ok=True)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    if not output_dir:
+        output_dir = select_output_directory()
+    os.makedirs(output_dir, exist_ok=True)
 
     checkpoint = load_checkpoint()
 
@@ -89,6 +118,7 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3):
 
     checkpoint['url'] = url
     checkpoint['title'] = title
+    checkpoint['output_dir'] = output_dir
     save_checkpoint(checkpoint)
 
     # ── STEP 2 — Download merged video+audio ──
@@ -112,7 +142,7 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3):
     model = WhisperModel("large-v3", device="cpu", compute_type="int8")
     print("  Model loaded.")
 
-    # Fonts directory
+    # Fonts directory (inside the installation folder)
     fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
     # ── STEP 5-6 — Process each clip ──
@@ -122,7 +152,7 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3):
     for i, (start_time, score) in enumerate(segments):
         clip_num = i + 1
 
-        final_path = os.path.join(OUTPUT_DIR, f"viral_clip_{clip_num}.mp4")
+        final_path = os.path.join(output_dir, f"viral_clip_{clip_num}.mp4")
 
         if clip_num in completed_clips and os.path.exists(final_path):
             print(f"\n{'='*55}")
@@ -186,7 +216,7 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3):
         else:
             print(f"  {i+1}. {abs_path}  (FILE NOT FOUND)")
     print("=" * 60)
-    print(f"\n  Semua file tersimpan di folder: {os.path.abspath(OUTPUT_DIR)}")
+    print(f"\n  Semua file tersimpan di folder: {os.path.abspath(output_dir)}")
 
     return results
 
@@ -216,27 +246,31 @@ def main():
             num_clips = int(sys.argv[4]) if len(sys.argv) > 4 else 3
         except ValueError:
             num_clips = 3
-        run_clip_pipeline(url, layout, duration, num_clips)
+        
+        # Select output dir via GUI explorer
+        output_dir = select_output_directory()
+        run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
     else:
         if checkpoint.get('url'):
             resume_choice = input("\nLanjutkan sesi sebelumnya? (y/n, default y): ").strip().lower()
             if resume_choice == 'n':
                 clear_checkpoint()
-                # Clean only temp video/audio clips but preserve download cache
-                for f in os.listdir(TEMP_DIR) if os.path.exists(TEMP_DIR) else []:
-                    if f.startswith("clip_") or f.startswith("vertical_") or f.startswith("subtitle_"):
-                        try:
-                            os.remove(os.path.join(TEMP_DIR, f))
-                        except:
-                            pass
+                if os.path.exists(TEMP_DIR):
+                    for f in os.listdir(TEMP_DIR):
+                        if f.startswith("clip_") or f.startswith("vertical_") or f.startswith("subtitle_"):
+                            try:
+                                os.remove(os.path.join(TEMP_DIR, f))
+                            except:
+                                pass
                 print("Sesi cache sebelumnya dihapus (memulai ulang pencarian segment baru).\n")
             else:
                 url = checkpoint['url']
                 layout = checkpoint.get('layout', 'crop')
                 duration = checkpoint.get('duration', 60)
                 num_clips = checkpoint.get('num_clips', 3)
+                output_dir = checkpoint.get('output_dir')
                 print(f"Melanjutkan proses: {checkpoint.get('title', url)}\n")
-                run_clip_pipeline(url, layout, duration, num_clips)
+                run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
                 return
 
         url = input("\nMasukkan link YouTube: ").strip()
@@ -266,12 +300,16 @@ def main():
         except ValueError:
             num_clips = 3
 
+        # Select output folder via GUI
+        output_dir = select_output_directory()
+
         checkpoint['layout'] = layout
         checkpoint['duration'] = duration
         checkpoint['num_clips'] = num_clips
+        checkpoint['output_dir'] = output_dir
         save_checkpoint(checkpoint)
 
-        run_clip_pipeline(url, layout, duration, num_clips)
+        run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
 
 if __name__ == "__main__":
     main()
