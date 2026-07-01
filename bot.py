@@ -59,11 +59,13 @@ def select_output_directory():
     return fallback
 
 def transcribe_with_faster_whisper(audio_path, model):
+    # Force language='id' (Indonesian) to prevent incorrect auto-detection (like 'vi' or others)
     segments, info = model.transcribe(
         audio_path,
         beam_size=5,
         best_of=5,
         word_timestamps=True,
+        language='id',              # Force Indonesian language
         vad_filter=True,
         vad_parameters=dict(
             min_silence_duration_ms=300,
@@ -73,7 +75,7 @@ def transcribe_with_faster_whisper(audio_path, model):
         no_speech_threshold=0.5,
     )
 
-    print(f"  Bahasa terdeteksi: {info.language} (confidence: {info.language_probability:.1%})")
+    print(f"  Bahasa dipaksa: id (Indonesian)")
 
     all_words = []
     full_text_parts = []
@@ -99,6 +101,29 @@ def transcribe_with_faster_whisper(audio_path, model):
 
     return all_words
 
+def _clean_temp_for_new_video():
+    """Hapus SELURUH isi folder temp saat ganti video baru."""
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+        print("[CLEAN] Folder temp dihapus untuk video baru.")
+    os.makedirs(TEMP_DIR, exist_ok=True)
+
+def _clean_temp_keep_download():
+    """Hapus clip/subtitle/vertical di temp, tapi PERTAHANKAN download mentah (full_merged.mp4, full_audio.wav)."""
+    if not os.path.exists(TEMP_DIR):
+        return
+    for f in os.listdir(TEMP_DIR):
+        # Pertahankan file download mentah
+        if f.startswith("full_"):
+            continue
+        filepath = os.path.join(TEMP_DIR, f)
+        try:
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+        except:
+            pass
+    print("[CLEAN] Cache clip/subtitle dihapus (download mentah tetap tersimpan).")
+
 def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=None):
     os.makedirs(TEMP_DIR, exist_ok=True)
     
@@ -107,6 +132,18 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=N
     os.makedirs(output_dir, exist_ok=True)
 
     checkpoint = load_checkpoint()
+
+    # ── AUTO-DETECT URL CHANGE ──
+    # Jika URL baru berbeda dengan URL di checkpoint lama, reset semua
+    old_url = checkpoint.get('url', '')
+    if old_url and old_url != url:
+        print(f"\n[!] URL baru terdeteksi (berbeda dari sesi sebelumnya).")
+        print(f"    Lama : {checkpoint.get('title', old_url)}")
+        print(f"    Baru : {url}")
+        print(f"    Mereset semua data sesi lama...")
+        _clean_temp_for_new_video()
+        clear_checkpoint()
+        checkpoint = {}
 
     # ── STEP 1 — Video Info ──
     print("\n[STEP 1/6] Mendapatkan detail video...")
@@ -154,12 +191,19 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=N
 
         final_path = os.path.join(output_dir, f"viral_clip_{clip_num}.mp4")
 
-        if clip_num in completed_clips and os.path.exists(final_path):
+        if clip_num in completed_clips and os.path.exists(final_path) and os.path.getsize(final_path) > 10000:
             print(f"\n{'='*55}")
             print(f"  [RESUME] Clip {clip_num}/{len(segments)} sudah selesai, skip.")
             print(f"{'='*55}")
             results.append(final_path)
             continue
+        
+        # Jika file dihapus manual oleh user, hapus dari completed_clips
+        if clip_num in completed_clips and not os.path.exists(final_path):
+            completed_clips.discard(clip_num)
+            checkpoint['completed_clips'] = list(completed_clips)
+            save_checkpoint(checkpoint)
+            print(f"\n[!] File clip {clip_num} tidak ditemukan, akan diproses ulang.")
 
         end_time = start_time + duration
         print(f"\n{'='*55}")
@@ -252,17 +296,57 @@ def main():
         run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
     else:
         if checkpoint.get('url'):
-            resume_choice = input("\nLanjutkan sesi sebelumnya? (y/n, default y): ").strip().lower()
-            if resume_choice == 'n':
+            print("\nPilihan:")
+            print("  y = Lanjutkan sesi sebelumnya (resume)")
+            print("  n = Generate clip BARU dari video yang SAMA (tanpa download ulang)")
+            print("  x = Mulai dari NOL dengan video BARU (hapus semua)")
+            resume_choice = input("Pilihan (y/n/x, default y): ").strip().lower()
+            
+            if resume_choice == 'x':
+                # Ganti video baru — hapus semua total
                 clear_checkpoint()
-                if os.path.exists(TEMP_DIR):
-                    for f in os.listdir(TEMP_DIR):
-                        if f.startswith("clip_") or f.startswith("vertical_") or f.startswith("subtitle_"):
-                            try:
-                                os.remove(os.path.join(TEMP_DIR, f))
-                            except:
-                                pass
-                print("Sesi cache sebelumnya dihapus (memulai ulang pencarian segment baru).\n")
+                _clean_temp_for_new_video()
+                print("Semua data dihapus total. Siap untuk video baru.\n")
+            elif resume_choice == 'n':
+                # Video sama, tapi mau generate segmen baru
+                # Simpan info download mentah, hapus sisanya
+                old_checkpoint = dict(checkpoint)
+                clear_checkpoint()
+                _clean_temp_keep_download()
+                # Restore hanya download paths supaya tidak download ulang
+                new_cp = {}
+                if old_checkpoint.get('merged_path'):
+                    new_cp['merged_path'] = old_checkpoint['merged_path']
+                if old_checkpoint.get('wav_path'):
+                    new_cp['wav_path'] = old_checkpoint['wav_path']
+                save_checkpoint(new_cp)
+                print("Segmen lama dihapus. Bot akan mencari segmen baru (tanpa download ulang).\n")
+                # Langsung lanjut ke input URL dengan URL lama
+                url = old_checkpoint['url']
+                # Tanyakan setting baru
+                print(f"Video: {old_checkpoint.get('title', url)}")
+                print("\nPilih layout video vertikal:")
+                print("  1. Crop Center (Potong tengah 9:16) - Default")
+                print("  2. Stack (Atas: Facecam, Bawah: Gameplay)")
+                choice = input("Pilihan (1/2, default 1): ").strip()
+                layout = "stack" if choice == "2" else "crop"
+                duration_input = input("Durasi tiap klip (detik, default 60, maks 90): ").strip()
+                try:
+                    duration = int(duration_input)
+                    if duration <= 0 or duration > 90:
+                        duration = 60
+                except ValueError:
+                    duration = 60
+                clips_input = input("Jumlah clip (default 3, maks 5): ").strip()
+                try:
+                    num_clips = int(clips_input)
+                    if num_clips <= 0 or num_clips > 5:
+                        num_clips = 3
+                except ValueError:
+                    num_clips = 3
+                output_dir = select_output_directory()
+                run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
+                return
             else:
                 url = checkpoint['url']
                 layout = checkpoint.get('layout', 'crop')
