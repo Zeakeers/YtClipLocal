@@ -24,6 +24,7 @@ from clipper import (
 )
 from subtitle_generator import generate_ass_file_from_faster_whisper
 from layout_processor import format_video_vertical, render_subtitles_to_video
+from translator import translate_segments_with_timestamps
 
 # We define default locations
 TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
@@ -58,14 +59,38 @@ def select_output_directory():
     print(f"Menggunakan folder default: {fallback}")
     return fallback
 
-def transcribe_with_faster_whisper(audio_path, model):
-    # Force language='id' (Indonesian) to prevent incorrect auto-detection (like 'vi' or others)
-    segments, info = model.transcribe(
+def transcribe_with_faster_whisper(audio_path, model, source_lang='id'):
+    """
+    Transcribe audio using faster-whisper.
+    source_lang: bahasa video yang dipilih user.
+    - 'id' = Indonesia, langsung transkripsi tanpa translate.
+    - 'jw'/'su'/bahasa daerah = Transkripsi tetap pakai 'id' (lebih akurat), lalu translate hasilnya.
+    - 'en'/'ko'/'ja'/dll = Transkripsi pakai bahasa asli, lalu translate ke Indonesia.
+    """
+    # Bahasa daerah Indonesia (Jawa, Sunda, dll) — Whisper tidak support dengan baik.
+    # Solusi: transkripsi pakai model Indonesia (hasilnya campur Indo-Jawa tapi readable),
+    # lalu translate ke Indonesia murni.
+    local_langs = {'jw', 'su', 'min', 'ban', 'bug', 'mad', 'ace'}  # bahasa daerah
+    
+    if source_lang in local_langs:
+        whisper_lang = 'id'  # Force Indonesian untuk transkripsi
+        need_translate = True
+        print(f"  Bahasa video: {source_lang} (transkripsi pakai 'id', lalu translate)")
+    elif source_lang == 'id':
+        whisper_lang = 'id'
+        need_translate = False
+        print(f"  Bahasa Whisper: id (Indonesian)")
+    else:
+        whisper_lang = source_lang
+        need_translate = True
+        print(f"  Bahasa Whisper: {whisper_lang} (akan di-translate ke Indonesia)")
+    
+    segments_iter, info = model.transcribe(
         audio_path,
         beam_size=5,
         best_of=5,
         word_timestamps=True,
-        language='id',              # Force Indonesian language
+        language=whisper_lang,
         vad_filter=True,
         vad_parameters=dict(
             min_silence_duration_ms=300,
@@ -75,11 +100,9 @@ def transcribe_with_faster_whisper(audio_path, model):
         no_speech_threshold=0.5,
     )
 
-    print(f"  Bahasa dipaksa: id (Indonesian)")
-
     all_words = []
     full_text_parts = []
-    for segment in segments:
+    for segment in segments_iter:
         full_text_parts.append(segment.text.strip())
         if segment.words:
             for w in segment.words:
@@ -98,6 +121,11 @@ def transcribe_with_faster_whisper(audio_path, model):
     print(f"  Total kata: {len(all_words)}")
     print(f"  Rata-rata confidence: {avg_confidence:.1%}")
     print(f"  Preview: {full_text[:120]}...")
+
+    # Translate jika diperlukan
+    if need_translate and all_words:
+        print(f"\n  [AUTO-TRANSLATE] -> Bahasa Indonesia...")
+        all_words = translate_segments_with_timestamps(all_words, source_lang=source_lang)
 
     return all_words
 
@@ -124,7 +152,7 @@ def _clean_temp_keep_download():
             pass
     print("[CLEAN] Cache clip/subtitle dihapus (download mentah tetap tersimpan).")
 
-def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=None):
+def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=None, source_lang='id'):
     os.makedirs(TEMP_DIR, exist_ok=True)
     
     if not output_dir:
@@ -224,7 +252,7 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=N
             print(f"  [RESUME] Subtitle clip {clip_num} sudah ada, skip transkripsi.")
         else:
             print(f"  [Clip {clip_num}] Transkripsi dengan faster-whisper large-v3...")
-            words = transcribe_with_faster_whisper(clipped_audio, model)
+            words = transcribe_with_faster_whisper(clipped_audio, model, source_lang=source_lang)
             generate_ass_file_from_faster_whisper(words, ass_path)
 
         # 5c. Vertical layout
@@ -264,6 +292,40 @@ def run_clip_pipeline(url, layout="crop", duration=60, num_clips=3, output_dir=N
 
     return results
 
+def _ask_language():
+    """Tanya user bahasa video. Default Indonesia. Jika bahasa lain, caption akan auto-translate ke Indo."""
+    print("\nBahasa video:")
+    print("  1. Indonesia (default)")
+    print("  2. Jawa (auto-translate ke Indonesia)")
+    print("  3. Sunda (auto-translate ke Indonesia)")
+    print("  4. Inggris (auto-translate ke Indonesia)")
+    print("  5. Lainnya (ketik kode bahasa, misal: ko, ja, th)")
+    lang_choice = input("Pilihan (1-5, default 1): ").strip()
+    
+    lang_map = {
+        '1': 'id',
+        '2': 'jw',
+        '3': 'su',
+        '4': 'en',
+        '': 'id',
+    }
+    
+    if lang_choice in lang_map:
+        lang = lang_map[lang_choice]
+    elif lang_choice == '5':
+        lang = input("Masukkan kode bahasa (misal: ko, ja, th, ar): ").strip().lower()
+        if not lang:
+            lang = 'id'
+    else:
+        lang = 'id'
+    
+    if lang != 'id':
+        print(f"  Caption akan di-transkripsi dalam bahasa '{lang}' lalu auto-translate ke Bahasa Indonesia.")
+    else:
+        print(f"  Caption langsung dalam Bahasa Indonesia.")
+    
+    return lang
+
 def main():
     print("=" * 60)
     print("   YOUTUBE AUTO-CLIPPER & KARAOKE RENDERER BOT")
@@ -293,7 +355,7 @@ def main():
         
         # Select output dir via GUI explorer
         output_dir = select_output_directory()
-        run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
+        run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir, source_lang='id')
     else:
         if checkpoint.get('url'):
             print("\nPilihan:")
@@ -309,11 +371,9 @@ def main():
                 print("Semua data dihapus total. Siap untuk video baru.\n")
             elif resume_choice == 'n':
                 # Video sama, tapi mau generate segmen baru
-                # Simpan info download mentah, hapus sisanya
                 old_checkpoint = dict(checkpoint)
                 clear_checkpoint()
                 _clean_temp_keep_download()
-                # Restore hanya download paths supaya tidak download ulang
                 new_cp = {}
                 if old_checkpoint.get('merged_path'):
                     new_cp['merged_path'] = old_checkpoint['merged_path']
@@ -321,10 +381,9 @@ def main():
                     new_cp['wav_path'] = old_checkpoint['wav_path']
                 save_checkpoint(new_cp)
                 print("Segmen lama dihapus. Bot akan mencari segmen baru (tanpa download ulang).\n")
-                # Langsung lanjut ke input URL dengan URL lama
                 url = old_checkpoint['url']
-                # Tanyakan setting baru
                 print(f"Video: {old_checkpoint.get('title', url)}")
+                source_lang = _ask_language()
                 print("\nPilih layout video vertikal:")
                 print("  1. Crop Center (Potong tengah 9:16) - Default")
                 print("  2. Stack (Atas: Facecam, Bawah: Gameplay)")
@@ -345,7 +404,7 @@ def main():
                 except ValueError:
                     num_clips = 3
                 output_dir = select_output_directory()
-                run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
+                run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir, source_lang=source_lang)
                 return
             else:
                 url = checkpoint['url']
@@ -353,14 +412,17 @@ def main():
                 duration = checkpoint.get('duration', 60)
                 num_clips = checkpoint.get('num_clips', 3)
                 output_dir = checkpoint.get('output_dir')
+                source_lang = checkpoint.get('source_lang', 'id')
                 print(f"Melanjutkan proses: {checkpoint.get('title', url)}\n")
-                run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
+                run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir, source_lang=source_lang)
                 return
 
         url = input("\nMasukkan link YouTube: ").strip()
         if not url:
             print("Link tidak boleh kosong!")
             return
+
+        source_lang = _ask_language()
 
         print("\nPilih layout video vertikal:")
         print("  1. Crop Center (Potong tengah 9:16) - Default")
@@ -391,9 +453,10 @@ def main():
         checkpoint['duration'] = duration
         checkpoint['num_clips'] = num_clips
         checkpoint['output_dir'] = output_dir
+        checkpoint['source_lang'] = source_lang
         save_checkpoint(checkpoint)
 
-        run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir)
+        run_clip_pipeline(url, layout, duration, num_clips, output_dir=output_dir, source_lang=source_lang)
 
 if __name__ == "__main__":
     main()
